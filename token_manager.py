@@ -23,7 +23,7 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 WEEBOOK_URL = os.getenv("WEEBOOK_URL")
 
 STALE_TOKEN_HOURS = 6      
-MAX_TOKENS = 110           
+MAX_TOKENS = 1000         
 
 HEADERS = {
     "Authorization": f"token {GITHUB_TOKEN}",
