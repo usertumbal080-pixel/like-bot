@@ -13,7 +13,7 @@ load_dotenv()
 # --- Configuration ---
 GITHUB_API = "https://api.github.com"
 BRANCH = "main"
-ZONES = ["br", "ind", "bd", "id"]
+ZONES = ["id"]
 
 LOCAL_CONFIG_DIR = "configs"
 
@@ -202,3 +202,4 @@ async def github_file_exists(session, filename: str) -> bool:
     async with session.get(url, headers=HEADERS) as response:
         return response.status == 200
         
+
