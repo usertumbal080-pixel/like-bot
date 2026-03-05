@@ -13,14 +13,14 @@ load_dotenv()
 # --- Configuration ---
 GITHUB_API = "https://api.github.com"
 BRANCH = "main"
-ZONES = ["id"]
+ZONES = ["br", "ind", "bd", "id"]
 
 LOCAL_CONFIG_DIR = "configs"
 
 REPO_TOKENS = os.getenv("REPO_TOKENS")
 AUTH_URL = os.getenv("AUTH_URL")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+WEEBOOK_URL = os.getenv("WEEBOOK_URL")
 
 STALE_TOKEN_HOURS = 6      
 MAX_TOKENS = 110           
@@ -35,12 +35,12 @@ last_commit_times = {zone: None for zone in ZONES}
 
 
 def notify_discord(message: str):
-    """Send a notification to Discord via webhook."""
-    if not WEBHOOK_URL:
+    """Send a notification to Discord via WEEBOOK."""
+    if not WEEBOOK_URL:
         print("[Discord] Notification skipped.")
         return
     try:
-        requests.post(WEBHOOK_URL, json={"content": message}, timeout=5)
+        requests.post(WEEBOOK_URL, json={"content": message}, timeout=5)
     except Exception as e:
         print(f"[Discord] Error: {e}")
 
@@ -202,4 +202,3 @@ async def github_file_exists(session, filename: str) -> bool:
     async with session.get(url, headers=HEADERS) as response:
         return response.status == 200
         
-
