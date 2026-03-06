@@ -12,14 +12,7 @@ from dotenv import load_dotenv
 from token_manager import check_and_refresh_on_startup, check_token_validity
 import asyncio
 import json
-
-# Baca konfigurasi dari config_id.json
-with open('config_id.json') as f:
-    config = json.load(f)
-FF_UID = config['uid']
-FF_PASSWORD = config['password']
-
-AUTH_SERVER_URL = os.getenv('AUTH_URL', 'http://localhost:5000')
+from auth_client import AuthClient
 
 app = Flask(__name__)
 bot_name = "None"
@@ -43,6 +36,21 @@ flask_thread.start()
 
 if os.path.exists(".env"):
     load_dotenv()
+    # Baca kredensial dari file config_id.json
+CONFIG_FILE = "config_id.json"
+if not os.path.exists(CONFIG_FILE):
+    raise ValueError(f"File {CONFIG_FILE} tidak ditemukan!")
+
+with open(CONFIG_FILE, "r") as f:
+    config = json.load(f)
+
+FF_UID = config.get("uid")
+FF_PASSWORD = config.get("password")
+
+if not FF_UID or not FF_PASSWORD:
+    raise ValueError("UID atau password tidak ditemukan di config_id.json")
+
+AUTH_SERVER_URL = os.getenv("AUTH_URL", "http://localhost:5000")  # default localhost
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
@@ -58,9 +66,19 @@ class Seemu(commands.Bot):
         super().__init__(command_prefix=command_prefix, intents=intents, **kwargs)
         self.session = None
         self.initialized = False
+        self.auth_client = None  # 🟢 Ditambahkan
 
     async def setup_hook(self) -> None:
         self.session = aiohttp.ClientSession()
+
+        # 🟢 Inisialisasi auth client
+        try:
+            self.auth_client = AuthClient(AUTH_SERVER_URL, FF_UID, FF_PASSWORD)
+            await self.auth_client.get_token()  # Test ambil token
+            print("✅ Auth client initialized and connected to auth-server")
+        except Exception as e:
+            print(f"❌ Failed to initialize auth client: {e}")
+            self.auth_client = None
 
         for ext in extensions:
             try:
@@ -84,12 +102,6 @@ class Seemu(commands.Bot):
         activity = discord.Game(name=f"Sharing likes on {server_count} servers")
         await self.change_presence(activity=activity)
         bot_name = f"{self.user}"
-
-        
-        await check_and_refresh_on_startup(self.session)
-
-       
-        asyncio.create_task(check_token_validity(self.session))
 
     @tasks.loop(minutes=5)
     async def update_activity_task(self):
