@@ -1,281 +1,174 @@
 import discord
 from discord.ext import commands
+from discord import app_commands
 import aiohttp
+from datetime import datetime
+import json
+import os
 import asyncio
-import logging
+from dotenv import load_dotenv
 
-logger = logging.getLogger(__name__)
-
-# Daftar endpoint Free Fire API untuk fallback
-FF_API_ENDPOINTS = [
-    "https://api.freefire.com/v1/like",
-    "https://api.freefireapi.com/v1/like", 
-    "https://ff-api.garena.com/v1/like",
-    "https://api.ff.garena.com/v1/like"
-]
+load_dotenv()
+API_URL=os.getenv("API_URL")
+CONFIG_FILE = "like_channels.json"
 
 class LikeCommands(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.session = None
-
-    async def cog_load(self):
-        """Dipanggil saat cog dimuat"""
+        api_url = API_URL or ""
+        self.api_host = api_url if api_url.startswith("http") else f"https://{api_url}"
+        self.config_data = self.load_config()
+        self.cooldowns = {}
         self.session = aiohttp.ClientSession()
 
-    async def cog_unload(self):
-        """Dipanggil saat cog dibongkar"""
-        if self.session:
-            await self.session.close()
 
-    @commands.command(name='like', aliases=['fflike', 'likeff'])
-    async def like_player(self, ctx, player_id: str = None):
-        """Like a Free Fire player menggunakan ID player"""
-        
-        # Validasi input
-        if not player_id:
-            embed = discord.Embed(
-                title="❌ Error",
-                description="Masukkan ID player Free Fire!\nContoh: `!like 123456789`",
-                color=discord.Color.red()
-            )
-            await ctx.send(embed=embed)
+    def load_config(self):
+        default_config = {
+            "servers": {}
+        }
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, 'r') as f:
+                    loaded_config = json.load(f)
+                    loaded_config.setdefault("servers", {})
+                    return loaded_config
+            except json.JSONDecodeError:
+                print(f"WARNING: The configuration file '{CONFIG_FILE}' is corrupt or empty. Resetting to default configuration.")
+        self.save_config(default_config)
+        return default_config
+
+    def save_config(self, config_to_save=None):
+        data_to_save = config_to_save if config_to_save is not None else self.config_data
+        temp_file = CONFIG_FILE + ".tmp"
+        with open(temp_file, 'w') as f:
+            json.dump(data_to_save, f, indent=4)
+        os.replace(temp_file, CONFIG_FILE)
+
+    async def check_channel(self, ctx):
+        if ctx.guild is None:
+            return True
+        guild_id = str(ctx.guild.id)
+        like_channels = self.config_data["servers"].get(guild_id, {}).get("like_channels", [])
+        return not like_channels or str(ctx.channel.id) in like_channels
+
+    async def cog_load(self):
+        pass
+
+    @commands.hybrid_command(name="setlikechannel", description="Sets the channels where the /like command is allowed.")
+    @commands.has_permissions(administrator=True)
+    @app_commands.describe(channel="The channel to allow/disallow the /like command in.")
+    async def set_like_channel(self, ctx: commands.Context, channel: discord.TextChannel):
+        if ctx.guild is None:
+            await ctx.send("This command can only be used in a server.", ephemeral=True)
             return
 
-        # Cek apakah auth_client tersedia
-        if not self.bot.auth_client:
-            embed = discord.Embed(
-                title="🔴 Auth Server Error",
-                description="Tidak terhubung ke auth-server. Fitur like tidak tersedia.",
-                color=discord.Color.red()
-            )
-            await ctx.send(embed=embed)
+        guild_id = str(ctx.guild.id)
+        server_config = self.config_data["servers"].setdefault(guild_id, {})
+        like_channels = server_config.setdefault("like_channels", [])
+
+        channel_id_str = str(channel.id)
+
+        if channel_id_str in like_channels:
+            like_channels.remove(channel_id_str)
+            self.save_config()
+            await ctx.send(f"✅ Channel {channel.mention} has been **removed** from allowed channels for /like commands. The command is now **disallowed** there.", ephemeral=True)
+        else:
+            like_channels.append(channel_id_str)
+            self.save_config()
+            await ctx.send(f"✅ Channel {channel.mention} is now **allowed** for /like commands. The command will **only** work in specified channels if any are set.", ephemeral=True)
+
+    @commands.hybrid_command(name="like", description="Sends likes to a Free Fire player")
+    @app_commands.describe(uid="Player UID (numbers only, minimum 6 characters)", server="Server region: ID, IND, BR, BD, etc")
+    async def like_command(self, ctx: commands.Context, uid: str = None, server: str = None):
+        is_slash = ctx.interaction is not None
+
+        if not uid or not server:
+            return await ctx.send("UID and server are required. Usage: `/like <uid> <server>`", delete_after=10)
+        if not await self.check_channel(ctx):
+            msg = "This command is not available in this channel. Please use it in an authorized channel."
+            if is_slash:
+                await ctx.response.send_message(msg, ephemeral=True)
+            else:
+                await ctx.reply(msg, mention_author=False)
             return
 
-        # Kirim status loading
-        status_msg = await ctx.send(f"🔄 Memproses like untuk player `{player_id}`...")
+        user_id = ctx.author.id
+        cooldown = 30
+        if user_id in self.cooldowns:
+            last_used = self.cooldowns[user_id]
+            remaining = cooldown - (datetime.now() - last_used).seconds
+            if remaining > 0:
+                await ctx.send(f"Please wait {remaining} seconds before using this command again.", ephemeral=is_slash)
+                return
+        self.cooldowns[user_id] = datetime.now()
+
+        if not uid.isdigit() or len(uid) < 6:
+            await ctx.reply("Invalid UID. It must contain only numbers and be at least 6 characters long.", mention_author=False, ephemeral=is_slash)
+            return
+
 
         try:
-            # 1. Dapatkan token JWT dari auth-client
-            token = await self.bot.auth_client.get_token()
-            
-            # 2. Coba kirim like ke Free Fire API (coba semua endpoint)
-            success = False
-            last_error = None
+            async with ctx.typing():
+                url = f"{self.api_host}/like?uid={uid}&server={server}"
+                print(url)
+                async with self.session.get(url ) as response:
+                    if response.status == 404:
+                        await self._send_player_not_found(ctx, uid)
+                        return
 
-            for endpoint in FF_API_ENDPOINTS:
-                try:
-                    url = f"{endpoint}/{player_id}"
-                    headers = {
-                        "Authorization": f"Bearer {token}",
-                        "Content-Type": "application/json"
-                    }
+                    if response.status != 200:
+                        print(f"API Error: {response.status} - {await response.text()}")
+                        await self._send_api_error(ctx)
+                        return
 
-                    async with self.session.post(url, headers=headers, timeout=10) as resp:
-                        if resp.status == 200:
-                            # Like berhasil
-                            data = await resp.json() if resp.content_type == 'application/json' else {}
-                            
-                            embed = discord.Embed(
-                                title="✅ Like Berhasil!",
-                                description=f"Player **{player_id}** berhasil di-like",
-                                color=discord.Color.green()
-                            )
-                            
-                            # Tambah info tambahan jika ada
-                            if data.get('player_name'):
-                                embed.add_field(name="Nama Player", value=data['player_name'])
-                            if data.get('total_likes'):
-                                embed.add_field(name="Total Likes", value=data['total_likes'])
-                            
-                            await status_msg.edit(content=None, embed=embed)
-                            success = True
-                            break
-                            
-                        elif resp.status == 401:
-                            # Token tidak valid
-                            logger.warning(f"Token invalid untuk endpoint {endpoint}")
-                            continue  # Coba endpoint lain
-                            
-                        elif resp.status == 404:
-                            # Player tidak ditemukan
-                            embed = discord.Embed(
-                                title="❌ Player Tidak Ditemukan",
-                                description=f"Player dengan ID `{player_id}` tidak ditemukan di Free Fire.",
-                                color=discord.Color.red()
-                            )
-                            embed.add_field(
-                                name="💡 Tips",
-                                value="• Pastikan ID benar\n• Player mungkin mengganti ID\n• Coba cek di game langsung",
-                                inline=False
-                            )
-                            await status_msg.edit(content=None, embed=embed)
-                            return  # Stop kalau 404, karena pasti salah ID
-                            
-                        elif resp.status == 429:
-                            # Rate limited
-                            retry_after = resp.headers.get('Retry-After', '60')
-                            last_error = f"Rate limited, tunggu {retry_after} detik"
-                            continue
-                            
-                        else:
-                            last_error = f"Error {resp.status}"
-                            continue
-                            
-                except asyncio.TimeoutError:
-                    last_error = "Timeout"
-                    continue
-                except aiohttp.ClientError as e:
-                    last_error = f"Connection error: {str(e)}"
-                    continue
+                    data = await response.json()
+                    embed = discord.Embed(
+                        title="FREE FIRE LIKE",
+                        color=0x2ECC71 if data.get("status") == 1 else 0xE74C3C,
+                        timestamp=datetime.now()
+                    )
 
-            # Jika semua endpoint gagal
-            if not success:
-                embed = discord.Embed(
-                    title="🔴 Free Fire API Error",
-                    description="Tidak dapat terhubung ke server Free Fire saat ini.",
-                    color=discord.Color.red()
-                )
-                
-                # Kasih info tambahan
-                if last_error:
-                    embed.add_field(name="Error Detail", value=f"`{last_error}`", inline=False)
-                
-                embed.add_field(
-                    name="💡 Saran",
-                    value="• Coba lagi dalam beberapa menit\n• Cek status server Free Fire\n• Laporkan ke developer jika terus terjadi",
-                    inline=False
-                )
-                
-                await status_msg.edit(content=None, embed=embed)
-                
+                    if data.get("status") == 1:
+                        embed.description = (
+                            f"\n"
+                            f"┌  ACCOUNT\n"
+                            f"├─ NICKNAME: {data.get('player', 'Unknown')}\n"
+                            f"├─ UID: {uid}\n"
+                            f"└─ RESULT:\n"
+                            f"   ├─ ADDED: +{data.get('likes_added', 0)}\n"
+                            f"   ├─ BEFORE: {data.get('likes_before', 'N/A')}\n"
+                            f"   └─ AFTER: {data.get('likes_after', 'N/A')}\n"
+                        )
+                    else:
+                        embed.description = "This UID has already received the maximum likes today.\nPlease wait 24 hours and try again"
+
+                    embed.set_footer(text="DEVELOPED BY NEPUSU")
+                    embed.description += "\n🔗 JOIN : XX"
+                    await ctx.send(embed=embed, mention_author=True, ephemeral=is_slash)
+
+        except asyncio.TimeoutError:
+            await self._send_error_embed(ctx, "Timeout", "The server took too long to respond.", ephemeral=is_slash)
         except Exception as e:
-            # Error tidak terduga
-            logger.exception(f"Unexpected error in like command: {str(e)}")
-            embed = discord.Embed(
-                title="⚠️ Internal Error",
-                description="Terjadi kesalahan internal. Tim developer telah diberitahu.",
-                color=discord.Color.red()
-            )
-            await status_msg.edit(content=None, embed=embed)
+            print(f"Unexpected error in like_command: {e}")
+            await self._send_error_embed(ctx, "Critical Error", "An unexpected error occurred. Please try again later.", ephemeral=is_slash)
 
-    @commands.command(name='ffstatus', aliases=['ffapi'])
-    async def check_api_status(self, ctx):
-        """Cek status koneksi ke Free Fire API"""
+    async def _send_player_not_found(self, ctx, uid):
+        embed = discord.Embed(title="Player Not Found", description=f"The UID {uid} does not exist or is not accessible.", color=0xE74C3C)
+        embed.add_field(name="Tip", value="Make sure that:\n- The UID is correct\n- The player is not private", inline=False)
+        await ctx.send(embed=embed, ephemeral=True)
         
-        embed = discord.Embed(
-            title="📊 Status Free Fire API",
-            description="Mengecek koneksi ke server...",
-            color=discord.Color.blue()
-        )
-        
-        status_msg = await ctx.send(embed=embed)
-        
-        # Cek auth-server dulu
-        auth_status = "✅ Online" if self.bot.auth_client else "❌ Offline"
-        
-        # Test tiap endpoint
-        working_endpoints = []
-        failed_endpoints = []
-        
-        async with aiohttp.ClientSession() as session:
-            for endpoint in FF_API_ENDPOINTS:
-                try:
-                    async with session.get(f"{endpoint.replace('/like', '/status')}", timeout=5) as resp:
-                        if resp.status < 500:  # 200-499 berarti server merespon
-                            working_endpoints.append(endpoint)
-                        else:
-                            failed_endpoints.append(endpoint)
-                except:
-                    failed_endpoints.append(endpoint)
-        
-        # Buat embed baru dengan hasil
-        result_embed = discord.Embed(
-            title="📊 Status Free Fire API",
-            color=discord.Color.green() if working_endpoints else discord.Color.red()
-        )
-        
-        result_embed.add_field(
-            name="Auth Server",
-            value=auth_status,
-            inline=False
-        )
-        
-        if working_endpoints:
-            endpoints_text = "\n".join([f"✅ `{ep}`" for ep in working_endpoints[:3]])
-            result_embed.add_field(
-                name="Endpoint Tersedia",
-                value=endpoints_text,
-                inline=False
-            )
-        
-        if failed_endpoints:
-            failed_text = "\n".join([f"❌ `{ep}`" for ep in failed_endpoints[:3]])
-            result_embed.add_field(
-                name="Endpoint Gagal",
-                value=failed_text,
-                inline=False
-            )
-        
-        result_embed.set_footer(text=f"Total {len(working_endpoints)}/{len(FF_API_ENDPOINTS)} endpoint aktif")
-        
-        await status_msg.edit(embed=result_embed)
+    async def _send_api_error(self, ctx):
+        embed = discord.Embed(title="⚠️ Service Unavailable", description="The Free Fire API is not responding at the moment.", color=0xF39C12)
+        embed.add_field(name="Solution", value="Try again in a few minutes.", inline=False)
+        await ctx.send(embed=embed, ephemeral=True)
 
-    @commands.command(name='likeinfo', aliases=['ffinfo'])
-    async def player_info(self, ctx, player_id: str = None):
-        """Lihat info player Free Fire tanpa like"""
-        
-        if not player_id:
-            await ctx.send("❌ Masukkan ID player! Contoh: `!ffinfo 123456789`")
-            return
+    async def _send_error_embed(self, ctx, title, description, ephemeral=True):
+        embed = discord.Embed(title=f"❌ {title}", description=description, color=discord.Color.red(), timestamp=datetime.now())
+        embed.set_footer(text="An error occurred.")
+        await ctx.send(embed=embed, ephemeral=ephemeral)
 
-        if not self.bot.auth_client:
-            await ctx.send("🔴 Tidak terhubung ke auth-server")
-            return
-
-        status_msg = await ctx.send(f"🔍 Mencari info player `{player_id}`...")
-
-        try:
-            token = await self.bot.auth_client.get_token()
-            
-            # Coba cari info player (gunakan endpoint GET)
-            async with aiohttp.ClientSession() as session:
-                url = f"https://api.freefire.com/v1/player/{player_id}"
-                headers = {"Authorization": f"Bearer {token}"}
-                
-                try:
-                    async with session.get(url, headers=headers, timeout=10) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            
-                            embed = discord.Embed(
-                                title=f"👤 Info Player {player_id}",
-                                color=discord.Color.blue()
-                            )
-                            
-                            if data.get('player_name'):
-                                embed.add_field(name="Nama", value=data['player_name'])
-                            if data.get('level'):
-                                embed.add_field(name="Level", value=data['level'])
-                            if data.get('guild'):
-                                embed.add_field(name="Guild", value=data['guild'])
-                            if data.get('likes'):
-                                embed.add_field(name="Total Likes", value=data['likes'])
-                            if data.get('account_created'):
-                                embed.add_field(name="Akun Dibuat", value=data['account_created'])
-                            
-                            await status_msg.edit(content=None, embed=embed)
-                            
-                        elif resp.status == 404:
-                            await status_msg.edit(content=f"❌ Player `{player_id}` tidak ditemukan")
-                        else:
-                            await status_msg.edit(content=f"⚠️ Error {resp.status}")
-                            
-                except asyncio.TimeoutError:
-                    await status_msg.edit(content="⏰ Timeout, server tidak merespon")
-                    
-        except Exception as e:
-            await status_msg.edit(content=f"❌ Error: {str(e)}")
+    def cog_unload(self):
+        self.bot.loop.create_task(self.session.close())
 
 async def setup(bot):
     await bot.add_cog(LikeCommands(bot))
