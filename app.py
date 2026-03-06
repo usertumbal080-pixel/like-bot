@@ -11,6 +11,15 @@ import time
 from dotenv import load_dotenv
 from token_manager import check_and_refresh_on_startup, check_token_validity
 import asyncio
+import json
+
+# Baca konfigurasi dari config_id.json
+with open('config_id.json') as f:
+    config = json.load(f)
+FF_UID = config['uid']
+FF_PASSWORD = config['password']
+
+AUTH_SERVER_URL = os.getenv('AUTH_URL', 'http://localhost:5000')
 
 app = Flask(__name__)
 bot_name = "None"
