@@ -77,12 +77,12 @@ class LikeCommands(commands.Cog):
             await ctx.send(f"✅ Channel {channel.mention} is now **allowed** for /like commands. The command will **only** work in specified channels if any are set.", ephemeral=True)
 
     @commands.hybrid_command(name="like", description="Sends likes to a Free Fire player")
-    @app_commands.describe(uid="Player UID (numbers only, minimum 6 characters)")
-    async def like_command(self, ctx: commands.Context,server:str=None , uid: str = None):
+    @app_commands.describe(uid="Player UID (numbers only, minimum 6 characters)", server="Server region: ID, IND, BR, BD, etc")
+    async def like_command(self, ctx: commands.Context, uid: str = None, server: str = None):
         is_slash = ctx.interaction is not None
 
-        if uid and server is None:
-            return await ctx.send("UID and server are required",delete_after=10)
+        if not uid or not server:
+            return await ctx.send("UID and server are required. Usage: `/like <uid> <server>`", delete_after=10)
         if not await self.check_channel(ctx):
             msg = "This command is not available in this channel. Please use it in an authorized channel."
             if is_slash:
