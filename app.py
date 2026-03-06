@@ -37,7 +37,7 @@ flask_thread.start()
 if os.path.exists(".env"):
     load_dotenv()
     # Baca kredensial dari file config_id.json
-CONFIG_FILE = "config_id.json"
+CONFIG_FILE = "configs/config_id.json"
 if not os.path.exists(CONFIG_FILE):
     raise ValueError(f"File {CONFIG_FILE} tidak ditemukan!")
 
