@@ -7,4 +7,4 @@ aiohttp
 requests
 PyJWT==2.8.0
 PyCryptodome
-google
+protobuf==4.25.3
