@@ -7,31 +7,7 @@ import threading
 import sys
 import aiohttp
 import time
-import asyncio
 
-class AuthClient:
-    def __init__(self, auth_url, uid, password):
-        self.auth_url = auth_url
-        self.uid = uid
-        self.password = password
-        self.token = None
-        self.expires_at = 0
-        self.lock = asyncio.Lock()
-
-    async def get_token(self):
-        async with self.lock:
-            if self.token and time.time() < self.expires_at:
-                return self.token
-            # minta token baru
-            async with aiohttp.ClientSession() as session:
-                async with session.post(f"{self.auth_url}/login", json={"uid": self.uid, "password": self.password}) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        self.token = data['token']
-                        self.expires_at = time.time() + data['expires_in'] - 60
-                        return self.token
-                    else:
-                        raise Exception("Gagal login ke auth-server")
 from dotenv import load_dotenv
 from token_manager import check_and_refresh_on_startup, check_token_validity
 import asyncio
